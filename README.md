@@ -218,6 +218,32 @@ Now use `cgps` or `gpsmon` to make sure that you are receiving GPS information a
 
 `cgps` should display `Status: 3D fix (xx secs)`. Do not continue until you have a stable GPS fix.
 
+### Eliminate ModemManager
+
+Raspberry Pi OS, Debian based, installs and activates `ModemManager` by default. It can interfer with GPSD and cause inexplicable failures after several hours of smooth run. Check for:
+
+```bash
+systemctl is-active ModemManager
+```
+
+If active (and your are no longer in modem business, and not using LTE/4G), disable it:
+
+```
+sudo systemctl stop ModemManager
+sudo systemctl disable ModemManager
+sudo systemctl mask ModemManager
+```
+
+### Disable USB power saving
+
+If GPS is connected via USB, `autosuspend` might kill your GPS source randomly. Check if USB power control is active:
+
+```bash
+for f in /sys/bus/usb/devices/*/power/control; do echo "$f: $(cat $f)"; done
+```
+
+If any `auto` appears, disable the suspend by adding `usbcore.autosuspend=-1` to the end of the line of `/boot/firmware/cmdline.txt`.
+
 ## Setting up PPS
 
 The serial or USB connection to the GPS module alone does not allow precise time synchronisation. The slow communication has latencies somewhere between 50ms to 200ms, much too high latency for precision time servers.
