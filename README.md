@@ -199,12 +199,12 @@ DEVICES="/dev/ttyS0"
 USBAUTO="false"
 ```
 
-For USB connections (again use your actual device name):
+For USB connections (again use your actual device name). (Note: USBAUTO not required, is derived from devcie name):
 
 ```
 GPSD_OPTIONS="-n"
 DEVICES="/dev/ttyACM0"
-USBAUTO="true"
+USBAUTO="false"
 ```
 
 Enable and start `gpsd` with:
@@ -243,6 +243,28 @@ for f in /sys/bus/usb/devices/*/power/control; do echo "$f: $(cat $f)"; done
 ```
 
 If any `auto` appears, disable the suspend by adding `usbcore.autosuspend=-1` to the end of the line of `/boot/firmware/cmdline.txt`.
+
+#### Kernel USB power
+
+Assuming `/dev/ttyACM0` is your USB-connected GPS, check with:
+
+```
+udevadm info -a -n /dev/ttyACM0 | grep -m1 "power/control"
+```
+
+If that still shows "auto", get the vendor/product IDs for the device:
+
+```
+udevadm info -a -n /dev/ttyACM0 | grep -E "idVendor|idProduct" | head -n 2
+```
+
+and create a new udev rule `/etc/udev/rules.d/99-gps-usb-power.rules`:
+
+```
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="xxxx", ATTRS{idProduct}=="yyyy", ATTR{power/control}="on"
+```
+
+Replace the `idVendor` and `idProduct` in the rules file with the actual ids for your device.
 
 ## Setting up PPS
 
