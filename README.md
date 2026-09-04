@@ -266,6 +266,29 @@ ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="xxxx", ATTRS{idProduct}=="yyy
 
 Replace the `idVendor` and `idProduct` in the rules file with the actual ids for your device.
 
+### Working _without_ GPSD
+
+The imprecise GPS serial or USB time information is only used to get the current time within a second of accuracy: the actual precision is derived from the PPS signal. Therefore it is perfectly possible to _only_ use the PPS signal from your GPS device, and simply get the approximate time _from another NTP server_!
+
+Lets say `fritz.box` is your local internet router that provide NTP time information, you can simply use that:
+
+```
+refclock PPS /dev/pps0 lock fritz.box
+```
+
+Thats all! No need for GPS and SHM devices in that case.
+
+Even easier, if other NTP servers are available, run unlocked:
+
+```
+refclock PPS /dev/pps0 refid PPS0 precision 1e-9
+```
+
+The time information up to second precision is then simply derived from those other NTP servers.
+
+**Note:** This section entirely depends on other NTP server being available for the 'coarse' time-information, which then replaces the time information via serial/USB.
+**Note:** The trade-off is: GPSD delivers lots of valuable information about the number satellites available, locking states, and more. In best case, use both, even if you are locking from other time information.
+
 ## Setting up PPS
 
 The serial or USB connection to the GPS module alone does not allow precise time synchronisation. The slow communication has latencies somewhere between 50ms to 200ms, much too high latency for precision time servers.
@@ -379,8 +402,8 @@ Depending on you distri and chrony versione, the config is either `/etc/chrony/c
 refclock PPS /dev/pps0 lock GPS
 refclock SHM 0 refid GPS precision 1e-1 offset 0.0 delay 0.2 noselect
 ```
-
-> **Note:** See [man chrony.conf](https://chrony-project.org/doc/4.4/chrony.conf.html) for more details
+> **Note:** See the chapter above on using PPS while "Working _without_ GPSD", for an alternative, simpler `refclock`, in case other NTP servers are available: no need for GPS and SHM in that case, the coarse time information is derived from other NTP servers.
+> **Note:** See [man chrony.conf](https://chrony-project.org/doc/4.4/chrony.conf.html) for more details.
 
 This uses a shared memory device `SHM` to get unprecise time information from GPSD (low precision, marked as `noselect`, so that chrony doesn't try to sync to serial time data). This unprecise time information is then synchronised with the much more precise PPS signal.
 
