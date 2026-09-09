@@ -15,17 +15,16 @@ from i2c_lcd import LcdDisplay
 # start_time and end_time switch the display off during night-time.
 # Set both to None for always-on
 start_time:str|None = "07:00"
-end_time:str|None = "21:00"
+end_time:str|None = "23:00"
 # I2C address of the display, usually between 0x20 (Adafruit default) and 0x27 (all others)
 i2c_address_display:int = 0x27
 # Set to True for Adafruit I2C adapter which uses MCP23008 chip. Enables Adafruit specific connections
-# Set to False for all others which use PCF8574 
+# Set to False for all others which use PCF8574
 adafruit_i2c_hardware:bool = False
 # Display time as UTC
 display_utc_time:bool = False
-# LCD display update timing: False: default, slow according to spec,
-# True: update faster, low latency, exceeds specs. Set to False on display problems!
-lcd_latency_overdrive:bool = True
+# ÄNDRAD: Satt till False för att minska risken för kommunikationsfel på I2C-bussen
+lcd_latency_overdrive:bool = False
 # ---------------------------------------------------------
 
 # Global Variables for GPS data from background thread
@@ -35,6 +34,7 @@ gps_sats_used: int|None = None
 gps_sats: int|None = None
 
 bad_time_format_warning:bool = False
+
 def is_current_time_in_interval(log:logging.Logger, start_time_str:str|None, end_time_str:str|None):
     global bad_time_format_warning
     if start_time_str is None or end_time_str is None or start_time_str == "None" or end_time_str == "None":
@@ -58,22 +58,25 @@ def is_current_time_in_interval(log:logging.Logger, start_time_str:str|None, end
 
 
 def exec_cmd(log:logging.Logger, cmd:list[str]) -> list[str]:
-    ret:list[str] = []
-    p = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=-1
-    )
-    if p.stdout is None:
-        log.error(f"Failed to execute {cmd}")
+    # ÄNDRAD: Använder subprocess.run för att automatiskt stänga filhanterare och undvika resursläckor.
+    # Har även lagt till en timeout så skriptet inte hänger sig ifall kommandot fastnar.
+    try:
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            check=False,
+            timeout=5.0 
+        )
+        if result.returncode != 0:
+            log.warning(f"Warning: {' '.join(cmd)} failed with code {result.returncode}")
+        return result.stdout.splitlines()
+    except subprocess.TimeoutExpired:
+        log.error(f"Timeout: Kommando {' '.join(cmd)} tog för lång tid och avbröts.")
         return []
-    for line in p.stdout:
-        ret.append(line.decode("utf-8").strip())
-    _ = p.wait()
-    if p.returncode != 0:
-        cm = ""
-        for c in cmd:
-            cm = cm + c + " "
-        print("Warning: " + cm + "failed: " + str(p.returncode))
-    return ret
+    except Exception as e:
+        log.error(f"Failed to execute {cmd}: {e}")
+        return []
 
 
 def get_statistics(log:logging.Logger, _host:str="localhost") -> dict[str, Any]:  # pyright:ignore[reportExplicitAny]
@@ -97,10 +100,13 @@ def get_statistics(log:logging.Logger, _host:str="localhost") -> dict[str, Any]:
             if parm == "System time":
                 sub_pars = pars[1].strip().split(" ")
                 if len(sub_pars) > 2:
-                    val = float(sub_pars[0])
-                    if "slow" == sub_pars[2]:
-                        val = -1.0 * val
-                    stats["system_time_offset"] = val
+                    try:
+                        val = float(sub_pars[0])
+                        if "slow" == sub_pars[2]:
+                            val = -1.0 * val
+                        stats["system_time_offset"] = val
+                    except ValueError:
+                        pass
             elif parm == "Stratum":
                 try:
                     n = int(pars[1])
@@ -160,9 +166,7 @@ def main_loop():
     global display_utc_time
     global lcd_latency_overdrive
 
-    version = "2.0.0"
-
-    # Time interval for backlight, set to None for permanent backlight:
+    version = "2.0.1" # Uppdaterad version
 
     logging.basicConfig(level=logging.INFO)
     log = logging.getLogger("Chronotron")
@@ -192,99 +196,104 @@ def main_loop():
         exit(-1)
 
     while True:
-        if display_utc_time is True:
-            time_str: str = time.strftime("%Y-%m-%d  %H:%M:%S", time.gmtime())
-        else:
-            time_str = time.strftime("%Y-%m-%d  %H:%M:%S")
-        if time_str != last_time:
-            if (
-                start_time is None
-                or end_time is None
-                or is_current_time_in_interval(log, start_time, end_time)
-                or start_time == end_time
-            ):
-                lcd.set_backlight(True)
+        # ÄNDRAD: Hela logiken är nu innesluten i en try-except så demonen överlever oavsett vad.
+        try:
+            if display_utc_time is True:
+                time_str: str = time.strftime("%Y-%m-%d  %H:%M:%S", time.gmtime())
             else:
-                lcd.set_backlight(False)
-            last_time = time_str
-            stats = get_statistics(log)
-
-            if stats["is_locked"] != old_lock:
-                old_lock:bool = cast(bool, stats["is_locked"])
-                if old_lock is True:
-                    log.info("Chrony aquired lock to time source")
-
-            if old_src != stats["source"]:
-                old_src:str|None = cast(str|None, stats["source"])
-                if old_src is None:
-                    src = "None"
+                time_str = time.strftime("%Y-%m-%d  %H:%M:%S")
+            
+            if time_str != last_time:
+                if (
+                    start_time is None
+                    or end_time is None
+                    or is_current_time_in_interval(log, start_time, end_time)
+                    or start_time == end_time
+                ):
+                    lcd.set_backlight(True)
                 else:
-                    src = old_src
-                log.info(f"Chrony receiving time source from {src}")
+                    lcd.set_backlight(False)
+                last_time = time_str
+                stats = get_statistics(log)
 
-            if old_stratum != stats["stratum"]:
-                old_stratum:str|None = cast(str|None, stats["stratum"])
-                if old_stratum is None:
-                    strat:str = "?"
+                if stats["is_locked"] != old_lock:
+                    old_lock:bool = cast(bool, stats["is_locked"])
+                    if old_lock is True:
+                        log.info("Chrony aquired lock to time source")
+
+                if old_src != stats["source"]:
+                    old_src:str|None = cast(str|None, stats["source"])
+                    if old_src is None:
+                        src = "None"
+                    else:
+                        src = old_src
+                    log.info(f"Chrony receiving time source from {src}")
+
+                if old_stratum != stats["stratum"]:
+                    old_stratum:str|None = cast(str|None, stats["stratum"])
+                    if old_stratum is None:
+                        strat:str = "?"
+                    else:
+                        strat = old_stratum
+                    log.info(f"Chrony stratum level changed to {strat}")
+
+                if old_pps != stats["is_pps"]:
+                    old_pps:bool = cast(bool, stats["is_pps"])
+                    if old_pps is True:
+                        log.info("Chrony locked to high precision GPS PPS signal")
+                    else:
+                        log.info("Chrony lost PPS signal")
+
+                offset:str|None = cast(str|None, stats["system_time_offset"])
+                offs = "            "
+                if offset is not None:
+                    if stats["stratum"] is None:
+                        offs = "S[?]"
+                    else:
+                        offs = f"S[{stats['stratum']}]"
+                    offs += " {:+12.9f}sec".format(offset)
+                    if offs != last_offset:
+                        last_offset = offs
+
+                if stats["sats"] is None:
+                    sats = "--"
                 else:
-                    strat = old_stratum
-                log.info(f"Chrony stratum level changed to {strat}")
-
-            if old_pps != stats["is_pps"]:
-                old_pps:bool = cast(bool, stats["is_pps"])
-                if old_pps is True:
-                    log.info("Chrony locked to high precision GPS PPS signal")
+                    sats = f"{stats['sats']:02}"
+                if stats["sats_used"] is None:
+                    sats_used = "--"
                 else:
-                    log.info("Chrony lost PPS signal")
-
-            # if select_state == 0:
-            #     lcd.print_row(0, time_str)
-            # else:
-            #     if time.time() - trigger_time > 10:
-            #         select_state = 0
-            #     lcd.print_row(0, "Select 1")
-
-            offset:str|None = cast(str|None, stats["system_time_offset"])
-            offs = "            "
-            if offset is not None:
-                if stats["stratum"] is None:
-                    offs = "S[?]"
+                    sats_used = f"{stats['sats_used']:02}"
+                if stats["mode"] is None:
+                    mode = "-"
                 else:
-                    offs = f"S[{stats['stratum']}]"
-                offs += " {:+12.9f}sec".format(offset)
-                if offs != last_offset:
-                    last_offset = offs
-
-            if stats["sats"] is None:
-                sats = "--"
-            else:
-                sats = f"{stats['sats']:02}"
-            if stats["sats_used"] is None:
-                sats_used = "--"
-            else:
-                sats_used = f"{stats['sats_used']:02}"
-            if stats["mode"] is None:
-                mode = "-"
-            else:
-                mode = f"{stats['mode']:01}"
-            if stats["is_locked"]:
-                source_str = "L[*] "
-            else:
-                source_str = "L[ ] "
-            if stats["source"] is None:
-                source_str += "                    "
-            else:
-                source_str += cast(str, stats["source"])
-            if stats["adjusted_offset"] is None:
-                dev_str = "       "
-            else:
-                dev_str = f"{stats['adjusted_offset']:>7}"
-            last_str = f"F[{mode}] {sats_used}/{sats}   {dev_str}"  
-            lcd.print_row(0, time_str)
-            lcd.print_row(1, offs)
-            lcd.print_row(2, source_str)
-            lcd.print_row(3, last_str)
+                    mode = f"{stats['mode']:01}"
+                if stats["is_locked"]:
+                    source_str = "L[*] "
+                else:
+                    source_str = "L[ ] "
+                if stats["source"] is None:
+                    source_str += "                    "
+                else:
+                    source_str += cast(str, stats["source"])
+                if stats["adjusted_offset"] is None:
+                    dev_str = "       "
+                else:
+                    dev_str = f"{stats['adjusted_offset']:>7}"
+                
+                last_str = f"F[{mode}] {sats_used}/{sats}   {dev_str}"
+                
+                # Skriv till displayen
+                lcd.print_row(0, time_str)
+                lcd.print_row(1, offs)
+                lcd.print_row(2, source_str)
+                lcd.print_row(3, last_str)
+        
+        except Exception as e:
+            log.error(f"Oväntat fel i huvudloopen: {e}")
+            time.sleep(2.0) # Undvik logg-spam vid kontinuerliga fel
+            
         time.sleep(0.05)
+
 
 def gps_client():
     global gps_mode
